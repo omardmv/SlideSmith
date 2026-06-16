@@ -1,8 +1,7 @@
 // Prettified server logging so `npm run dev` shows what's happening during the
-// slow flows (scraping Pinterest, generating with the model, uploading +
-// scheduling to post-bridge). Colorized, timestamped, with a tiny spinner-free
-// progress helper. No deps — just ANSI codes, disabled when not a TTY or when
-// NO_COLOR is set.
+// slow flows (scraping Pinterest, generating with the model, saving slideshows
+// to disk). Colorized, timestamped, with a tiny spinner-free progress helper.
+// No deps — just ANSI codes, disabled when not a TTY or when NO_COLOR is set.
 const useColor = process.stdout.isTTY && !process.env.NO_COLOR
 
 const wrap = (code) => (s) => (useColor ? `\x1b[${code}m${s}\x1b[0m` : String(s))
@@ -22,7 +21,7 @@ const c = {
 const TAGS = {
   scrape: c.magenta('scrape '),
   generate: c.cyan('generate'),
-  schedule: c.green('schedule'),
+  save: c.green('save    '),
   server: c.blue('server  '),
 }
 

@@ -33,7 +33,7 @@ Strip SlideSmith down to slide generation only. Remove scheduling/posting/analyt
 
 **`server/store.js`**
 - Default `keys` object: drop `postbridge`, rename `openrouter` → `zai`. Result: `{ zai: '', apify: '' }`.
-- Default model: `'glm-4.7'`.
+- Default model: `'glm-5.2'`.
 - Same spread-merge pattern on read, so old configs with `openrouter` just become orphaned (unread). Documented in README.
 
 **`server/index.js`** — remove:

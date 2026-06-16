@@ -1,11 +1,11 @@
 // Client-side slide renderer. Each slide becomes a 1080×1920 PNG drawn on a
 // canvas — text over a gradient. No image-generation API, no cost, deterministic
-// output. The resulting data URLs are sent to the server, which uploads them to
-// post-bridge as the post's media.
+// output. The resulting data URLs are POSTed to /api/save/:id, which writes
+// them to disk under ~/.slidesmith/exports/.
 //
 // Caption geometry (font %, stroke, line-height, padding, centering) comes from
 // lib/captionStyle.ts — the SAME constants the editor preview uses — so the
-// scheduled PNG matches what the user saw when editing.
+// saved PNG matches what the user saw when editing.
 import type { Slide, Slideshow } from '../types';
 import { FONT_SIZE_PCT, STROKE_RATIO, LINE_HEIGHT, SIDE_PAD_PCT, pct } from './captionStyle';
 

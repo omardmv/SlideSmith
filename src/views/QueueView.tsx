@@ -1,4 +1,4 @@
-import { Check, X, Sparkles, RefreshCw, Loader2, Pencil } from 'lucide-react';
+import { Check, X, Sparkles, RefreshCw, Loader2, Pencil, Download } from 'lucide-react';
 import type { Slideshow } from '../types';
 import { ViewHeader } from '../components/ViewHeader';
 import { SlidePreview } from '../components/SlidePreview';
@@ -11,13 +11,13 @@ interface QueueViewProps {
   canGenerate: boolean;
   selectedIds: string[];
   onGenerate: () => void;
-  onApprove: (id: string) => void;
+  onSave: (id: string) => void;
   onReject: (id: string) => void;
   onEdit: (id: string) => void;
   onToggleSelect: (id: string) => void;
   onSelectAll: () => void;
   onClearSelection: () => void;
-  onBulkSchedule: () => void;
+  onBulkSave: () => void;
 }
 
 export function QueueView({
@@ -26,27 +26,27 @@ export function QueueView({
   canGenerate,
   selectedIds,
   onGenerate,
-  onApprove,
+  onSave,
   onReject,
   onEdit,
   onToggleSelect,
   onSelectAll,
   onClearSelection,
-  onBulkSchedule,
+  onBulkSave,
 }: QueueViewProps) {
   const selectedCount = selectedIds.length;
   return (
     <>
       <ViewHeader
         title="Queue"
-        subtitle={`${slideshows.length} slideshows waiting for your review. Approve to send to the scheduler.`}
+        subtitle={`${slideshows.length} slideshows waiting. Save any slideshow to disk — PNGs + caption land in ~/.slidesmith/exports/.`}
         right={
           <>
             {selectedCount > 0 ? (
               <>
                 <span className="text-[12px] text-ink-5">{selectedCount} selected</span>
-                <Button variant="primary" icon={<Check size={13} />} onClick={onBulkSchedule}>
-                  Schedule {selectedCount}
+                <Button variant="primary" icon={<Download size={13} />} onClick={onBulkSave}>
+                  Save {selectedCount}
                 </Button>
                 <Button variant="ghost" onClick={onClearSelection}>Clear</Button>
               </>
@@ -74,12 +74,12 @@ export function QueueView({
               <Check size={20} className="text-ink-5" />
             </div>
             <h2 className="text-[15px] font-semibold text-ink">
-              {canGenerate ? 'Queue empty' : 'Add your OpenRouter key to start'}
+              {canGenerate ? 'Queue empty' : 'Add your ZAI key to start'}
             </h2>
             <p className="text-[13px] text-ink-5 mt-1">
               {canGenerate
                 ? 'Generate a fresh batch of slideshows with AI.'
-                : 'Head to Settings, paste your OpenRouter API key, and tune the Brain.'}
+                : 'Head to Settings, paste your ZAI API key, and tune the Brain.'}
             </p>
             {canGenerate && (
               <div className="mt-4 flex justify-center">
@@ -104,7 +104,7 @@ export function QueueView({
                 slideshow={s}
                 selected={selectedIds.includes(s.id)}
                 onToggleSelect={() => onToggleSelect(s.id)}
-                onApprove={() => onApprove(s.id)}
+                onSave={() => onSave(s.id)}
                 onReject={() => onReject(s.id)}
                 onEdit={() => onEdit(s.id)}
               />
@@ -120,12 +120,12 @@ interface CardProps {
   slideshow: Slideshow;
   selected: boolean;
   onToggleSelect: () => void;
-  onApprove: () => void;
+  onSave: () => void;
   onReject: () => void;
   onEdit: () => void;
 }
 
-function SlideshowCard({ slideshow, selected, onToggleSelect, onApprove, onReject, onEdit }: CardProps) {
+function SlideshowCard({ slideshow, selected, onToggleSelect, onSave, onReject, onEdit }: CardProps) {
   return (
     <div className={`bg-card border rounded-xl overflow-hidden animate-fadeIn transition-colors ${selected ? 'border-ink ring-1 ring-ink' : 'border-line'}`}>
       {/* Slide strip */}
@@ -171,16 +171,16 @@ function SlideshowCard({ slideshow, selected, onToggleSelect, onApprove, onRejec
           </Button>
           <Button
             variant="primary"
-            icon={<Check size={13} />}
-            onClick={onApprove}
+            icon={<Download size={13} />}
+            onClick={onSave}
             fullWidth
           >
-            Approve
+            Save
           </Button>
           <IconButton
             variant="secondary"
             icon={<X size={13} />}
-            label="Reject"
+            label="Discard"
             onClick={onReject}
           />
         </div>

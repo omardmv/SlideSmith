@@ -1,10 +1,10 @@
 // Local, file-based persistence. Slidesmith is a single-user tool, so all state
 // lives in a small JSON config file + a queue file under the user's home dir.
-// No database — post-bridge holds the scheduled posts and results.
+// No database — saved slideshows live on disk under ~/.slidesmith/exports/.
 //
 // A "project" is one brand/account you generate for. Only the Brain and the
-// default post-bridge accounts differ per project; the API keys and model are
-// global. The queue (generated-but-unscheduled drafts) is per project.
+// background-pack selection differ per project; the API keys and model are
+// global. The queue (generated-but-unsaved drafts) is per project.
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
@@ -21,7 +21,35 @@ const DEFAULT_BRAIN = {
   audience: '',
   styleMemory: '',
 }
-const DEFAULT_DEFAULTS = { socialAccountIds: [], mode: 'draft' }
+
+// Starter presets ship with every new project. Tailored to Scrolang's
+// English-learning-for-Russian-speakers positioning — the user can edit
+// or delete them in the Brain tab.
+const STARTER_PRESETS = [
+  {
+    id: 'preset-educational',
+    name: 'Educational',
+    prompt:
+      'PRESET: Pure education. Teach one specific English phrase, rule, or mechanic. NO product pitch, NO mention of Scrolang anywhere (not in slides, not in caption, not in hashtags). End with a save CTA like «Сохрани для следующего раза» or similar situation-based save. The implicit pitch is "if they know this much for free, imagine what the app does" — never say that out loud.',
+  },
+  {
+    id: 'preset-edu-sales',
+    name: 'Educational + Sales',
+    prompt:
+      'PRESET: Teach first, pitch last. Slides 1–5 are pure value (a specific English phrase, rule, or mechanic with no product mention). Slide 6 is the ONLY slide that can mention Scrolang — use a conversion CTA like «Full lesson in Scrolang → link in bio» or «Try it in Scrolang, opens in Telegram». Caption may end with one Scrolang mention. Do not sell in slides 1–5 — that kills trust.',
+  },
+  {
+    id: 'preset-antidoom',
+    name: 'Anti-doomscroll vibe',
+    prompt:
+      'PRESET: Lifestyle / philosophy post about reclaiming scroll time. The product is NOT the point — the mindset is. Hooks are emotional or contrarian about time, attention, habits («Ты тратишь 3 часа в день на скроллинг — что если бы...»). Slides are reflective, short, almost poetic. NO English-teaching content for this preset. CTA is soft — «Подпишись, если откликнулось» or similar. The Scrolang mention (if any) goes only in the caption, not in slides.',
+  },
+]
+
+function starterPresets() {
+  // Fresh ids per call so cloned projects don't collide.
+  return STARTER_PRESETS.map((p) => ({ ...p, id: `${p.id}-${Date.now()}-${Math.round(Math.random() * 1e6)}` }))
+}
 
 function ensureDir() {
   if (!existsSync(DIR)) mkdirSync(DIR, { recursive: true })
@@ -40,20 +68,22 @@ function writeJson(path, value) {
 function newId(prefix) {
   return `${prefix}-${Date.now()}-${Math.round(Math.random() * 1e6)}`
 }
-function makeProject(name, brain, defaults, imagePacks) {
+function makeProject(name, brain, imagePacks) {
   return {
     id: newId('p'),
     name: name || 'Project 1',
     brain: { ...DEFAULT_BRAIN, ...brain },
-    defaults: { ...DEFAULT_DEFAULTS, ...defaults },
     // Which background packs generation draws from. Defaults to all bundled
     // packs so a fresh project generates with images out of the box. Empty = gradients.
     imagePacks: imagePacks ?? bundledPackNames(),
+    // Fresh starter presets per project so the user can edit/delete freely.
+    presets: starterPresets(),
   }
 }
 
-// Normalize on every read: fill defaults and migrate the old single-brain shape
-// ({ brain, defaults } at top level) into projects[].
+// Normalize on every read: fill defaults and migrate legacy shapes
+// (single-brain config, or projects missing the newer `presets` field) into
+// the current projects[] form.
 export function getConfig() {
   const s = readJson(CONFIG_PATH, {})
   let projects = Array.isArray(s.projects) && s.projects.length
@@ -61,14 +91,16 @@ export function getConfig() {
         id: p.id || newId('p'),
         name: p.name || 'Project',
         brain: { ...DEFAULT_BRAIN, ...p.brain },
-        defaults: { ...DEFAULT_DEFAULTS, ...p.defaults },
         imagePacks: p.imagePacks ?? bundledPackNames(),
+        // Migrate: if a pre-presets project is read, seed it with the starter
+        // set so the user can edit them going forward.
+        presets: Array.isArray(p.presets) && p.presets.length ? p.presets : starterPresets(),
       }))
     : null
 
   if (!projects) {
     // Migrate a pre-projects config, or create the first project.
-    const p = makeProject(s.brain?.appName || 'Project 1', s.brain, s.defaults)
+    const p = makeProject(s.brain?.appName || 'Project 1', s.brain)
     projects = [p]
   }
 
@@ -77,21 +109,25 @@ export function getConfig() {
     : projects[0].id
 
   const cfg = {
-    keys: { postbridge: '', openrouter: '', apify: '', ...s.keys },
-    model: s.model || 'openai/gpt-4o-mini',
+    keys: { zai: '', apify: '', ...s.keys },
+    // Reset any non-ZAI model (e.g. legacy OpenRouter ids like "openai/gpt-4o-mini")
+    // to the ZAI default on first read.
+    model: typeof s.model === 'string' && s.model.startsWith('glm-') ? s.model : 'glm-5.2',
     pinterestActor: s.pinterestActor || 'fatihtahta/pinterest-scraper-search',
     projects,
     activeProjectId,
   }
 
   // If we had to synthesize/migrate projects (no valid persisted projects array,
-  // or the active id was stale), write it back once so project ids are stable
-  // across subsequent reads. Otherwise every read would mint fresh ids.
+  // the active id was stale, or a project was missing the presets field), write
+  // it back once so project ids + starter presets are stable across subsequent
+  // reads. Otherwise every read would mint fresh ids / fresh presets.
   const needsPersist =
     !Array.isArray(s.projects) ||
     s.projects.length !== projects.length ||
     s.activeProjectId !== activeProjectId ||
-    s.projects.some((p, i) => p.id !== projects[i].id)
+    s.projects.some((p, i) => p.id !== projects[i].id) ||
+    s.projects.some((p) => !Array.isArray(p.presets) || !p.presets.length)
   if (needsPersist) writeJson(CONFIG_PATH, cfg)
 
   return cfg
@@ -131,8 +167,8 @@ export function updateProject(id, patch) {
           ...p,
           name: patch.name ?? p.name,
           brain: patch.brain ? { ...p.brain, ...patch.brain } : p.brain,
-          defaults: patch.defaults ? { ...p.defaults, ...patch.defaults } : p.defaults,
           imagePacks: patch.imagePacks ?? p.imagePacks,
+          presets: patch.presets ?? p.presets,
         }
       : p
   )
@@ -185,3 +221,8 @@ function removeQueueFor(projectId) {
 }
 
 export const CONFIG_DIR = DIR
+// Exports live under Documents by default — they're user content (PNGs you'll
+// post), not app data, so they shouldn't be hidden in a dotfile. Config + queue
+// stay in CONFIG_DIR. Override with SLIDESMITH_EXPORTS_DIR if you want them
+// elsewhere (e.g. a synced folder).
+export const EXPORTS_DIR = process.env.SLIDESMITH_EXPORTS_DIR || join(homedir(), 'Documents', 'Slidesmith')

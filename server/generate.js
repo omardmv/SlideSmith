@@ -2,7 +2,7 @@
 // reference patterns), the chosen model writes N carousel slideshows: a hook,
 // caption, hashtags, a rationale, and the per-slide text. Images are rendered
 // later, client-side — the model only writes the words.
-import { chatJSON } from './openrouter.js'
+import { chatJSON } from './zai.js'
 import { logger } from './log.js'
 
 const log = logger('generate')
@@ -17,7 +17,10 @@ const PALETTE = [
   ['#26120a', '#1a0c06'],
 ]
 
-function buildPrompt(brain, count) {
+function buildPrompt(brain, count, preset) {
+  const presetBlock = preset?.prompt
+    ? `\n\nPreset for this batch — "${preset.name}":\n${preset.prompt}\n`
+    : ''
   return `You write short-form social media carousel slideshows (TikTok/Instagram).
 
 Account context:
@@ -26,7 +29,7 @@ Account context:
 - Audience: ${brain.audience || '(unspecified)'}
 
 What's working for this account (style memory — respect this closely):
-${brain.styleMemory || '(none yet — use proven short-form patterns)'}
+${brain.styleMemory || '(none yet — use proven short-form patterns)'}${presetBlock}
 
 Write ${count} distinct slideshows. Respond with a JSON object of this exact shape:
 {
@@ -46,10 +49,12 @@ Keep them on-brand, varied, and genuinely good. Do not write generic filler. Ret
 
 // Generate in small batches so big counts don't overflow the model's output /
 // truncate the JSON. Each call asks for a handful; we loop until we hit `count`.
-const BATCH = 6
+// Reasoning models (glm-5.x) are slow per-call, so a smaller batch means more
+// frequent progress updates instead of one long silent wait.
+const BATCH = 2
 
-export async function generateSlideshows({ apiKey, model, brain, count = 4 }) {
-  log.start(`Generating ${count} slideshow${count === 1 ? '' : 's'} with ${model}`)
+export async function generateSlideshows({ apiKey, model, brain, count = 4, preset }) {
+  log.start(`Generating ${count} slideshow${count === 1 ? '' : 's'} with ${model}${preset ? ` · preset: ${preset.name}` : ''}`)
   if (brain?.niche) log.info(`niche: ${brain.niche}${brain.appName ? ` · ${brain.appName}` : ''}`)
   const raw = []
   let safety = 0
@@ -57,7 +62,7 @@ export async function generateSlideshows({ apiKey, model, brain, count = 4 }) {
     safety++
     const n = Math.min(BATCH, count - raw.length)
     log.step(`asking model for ${n} more (${raw.length}/${count} so far)…`)
-    const parsed = await chatJSON({ apiKey, model, prompt: buildPrompt(brain, n) })
+    const parsed = await chatJSON({ apiKey, model, prompt: buildPrompt(brain, n, preset) })
     const batch = parsed.slideshows || []
     if (!batch.length) {
       log.warn('model returned no slideshows — stopping early')

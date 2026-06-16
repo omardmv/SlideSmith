@@ -1,23 +1,20 @@
 import { useState } from 'react';
-import { LayoutGrid, CalendarClock, LineChart, Brain, Settings, ChevronsUpDown, Plus, Check, Images } from 'lucide-react';
+import { LayoutGrid, Brain, Settings, ChevronsUpDown, Plus, Check, Images } from 'lucide-react';
 import type { ViewKey, Project } from '../types';
 
 interface SidebarProps {
   activeView: ViewKey;
   onSelectView: (view: ViewKey) => void;
   queueCount: number;
-  scheduledCount: number;
   projects: Project[];
   activeProjectId: string;
   onSwitchProject: (id: string) => void;
   onNewProject: () => void;
 }
 
-const nav: { key: ViewKey; label: string; icon: typeof LayoutGrid; badge?: 'queue' | 'scheduled' }[] = [
+const nav: { key: ViewKey; label: string; icon: typeof LayoutGrid; badge?: 'queue' }[] = [
   { key: 'queue', label: 'Queue', icon: LayoutGrid, badge: 'queue' },
   { key: 'library', label: 'Library', icon: Images },
-  { key: 'schedule', label: 'Schedule', icon: CalendarClock, badge: 'scheduled' },
-  { key: 'results', label: 'Results', icon: LineChart },
   { key: 'brain', label: 'Brain', icon: Brain },
 ];
 
@@ -29,7 +26,6 @@ export function Sidebar({
   activeView,
   onSelectView,
   queueCount,
-  scheduledCount,
   projects,
   activeProjectId,
   onSwitchProject,
@@ -105,7 +101,7 @@ export function Sidebar({
         <div className="flex flex-col gap-0.5">
           {nav.map(({ key, label, icon: Icon, badge }) => {
             const isActive = activeView === key;
-            const count = badge === 'queue' ? queueCount : badge === 'scheduled' ? scheduledCount : undefined;
+            const count = badge === 'queue' ? queueCount : undefined;
             return (
               <button
                 key={key}

@@ -2,19 +2,23 @@ import { useState } from 'react';
 import { X, Loader2, Sparkles } from 'lucide-react';
 import { Button } from './Button';
 import { PackPicker } from './PackPicker';
+import type { Preset } from '../types';
 
 interface GenerateModalProps {
   defaultPacks: string[];
+  presets: Preset[];
+  defaultPresetId: string;
   generating: boolean;
   onClose: () => void;
-  onGenerate: (count: number, packs: string[]) => void;
+  onGenerate: (count: number, packs: string[], presetId: string) => void;
 }
 
 const COUNT_OPTIONS = [1, 3, 5, 10];
 
-export function GenerateModal({ defaultPacks, generating, onClose, onGenerate }: GenerateModalProps) {
+export function GenerateModal({ defaultPacks, presets, defaultPresetId, generating, onClose, onGenerate }: GenerateModalProps) {
   const [count, setCount] = useState(3);
   const [packs, setPacks] = useState<string[]>(defaultPacks);
+  const [presetId, setPresetId] = useState<string>(defaultPresetId);
 
   return (
     <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={generating ? undefined : onClose}>
@@ -27,6 +31,23 @@ export function GenerateModal({ defaultPacks, generating, onClose, onGenerate }:
         </div>
 
         <div className="flex-1 overflow-y-auto p-5 space-y-5">
+          {/* Preset */}
+          <div>
+            <label className="text-[11px] text-ink-5 uppercase tracking-widest font-semibold mb-1.5 block">Preset</label>
+            <select
+              value={presetId}
+              onChange={(e) => setPresetId(e.target.value)}
+              disabled={generating}
+              className="w-full h-9 bg-card border border-line rounded-lg px-3 text-[13px] text-ink outline-none focus:border-ink-7 focus:ring-2 focus:ring-ink/10 disabled:opacity-50"
+            >
+              <option value="">None — use Brain only</option>
+              {presets.map((p) => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
+            <p className="text-[11px] text-ink-6 mt-1">Edits the prompt for this batch only. Manage presets in the Brain tab.</p>
+          </div>
+
           {/* Count */}
           <div>
             <label className="text-[11px] text-ink-5 uppercase tracking-widest font-semibold mb-1.5 block">How many?</label>
@@ -68,7 +89,7 @@ export function GenerateModal({ defaultPacks, generating, onClose, onGenerate }:
           <Button
             variant="primary"
             icon={generating ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
-            onClick={() => onGenerate(count, packs)}
+            onClick={() => onGenerate(count, packs, presetId)}
             disabled={generating}
           >
             {generating ? 'Generating…' : `Generate ${count}`}

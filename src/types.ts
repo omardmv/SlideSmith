@@ -1,4 +1,4 @@
-export type ViewKey = 'queue' | 'library' | 'schedule' | 'results' | 'brain' | 'settings';
+export type ViewKey = 'queue' | 'library' | 'brain' | 'settings';
 
 export interface Slide {
   id: string;
@@ -28,21 +28,23 @@ export interface BrainState {
   styleMemory: string;
 }
 
-export interface ProjectDefaults {
-  socialAccountIds: number[];
-  mode: 'draft' | 'schedule';
-}
-
 export interface Project {
   id: string;
   name: string;
   brain: BrainState;
-  defaults: ProjectDefaults;
   imagePacks: string[]; // background packs generation draws from ([] = gradients only)
+  presets: Preset[]; // user-editable generation presets (Educational, Sales, etc.)
+}
+
+export interface Preset {
+  id: string;
+  name: string;
+  // Injected verbatim into the prompt between style memory and JSON shape spec.
+  prompt: string;
 }
 
 export interface AppConfig {
-  keys: { postbridge: string; openrouter: string; apify: string };
+  keys: { zai: string; apify: string };
   model: string;
   pinterestActor: string;
   projects: Project[];
@@ -68,32 +70,7 @@ export interface ModelOption {
   name: string;
 }
 
-export interface SocialAccount {
-  id: number;
-  platform: string;
-  username: string;
-}
-
-// Shapes returned by post-bridge (mapped in lib/api.ts).
-export interface ScheduledPost {
-  id: string;
-  caption: string;
-  status: string; // scheduled | processing | posted | draft
-  scheduledAt: string | null;
-  mediaUrls: string[];
-  socialAccounts: number[];
-  isDraft: boolean;
-}
-
-export interface PostResult {
-  id: string;
-  platform: string;
-  views: number;
-  likes: number;
-  comments: number;
-  shares: number;
-  coverImageUrl: string | null;
-  shareUrl: string | null;
-  description: string | null;
-  lastSyncedAt: string | null;
+// Result of POST /api/save/:id — the absolute path the slideshow was written to.
+export interface SaveResult {
+  path: string;
 }

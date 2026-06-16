@@ -1,9 +1,13 @@
-import type { BrainState } from '../types';
+import { Plus, Trash2 } from 'lucide-react';
+import type { BrainState, Preset } from '../types';
 import { ViewHeader } from '../components/ViewHeader';
+import { Button } from '../components/Button';
 
 interface BrainViewProps {
   brain: BrainState;
+  presets: Preset[];
   onChange: (brain: BrainState) => void;
+  onPresetsChange: (presets: Preset[]) => void;
 }
 
 const inputClass =
@@ -16,7 +20,23 @@ const textareaClass =
   'placeholder:text-ink-6 outline-none transition-colors resize-none ' +
   'focus:border-ink-7 focus:ring-2 focus:ring-ink/10';
 
-export function BrainView({ brain, onChange }: BrainViewProps) {
+function newPresetId() {
+  return `preset-${Date.now()}-${Math.round(Math.random() * 1e6)}`;
+}
+
+export function BrainView({ brain, presets, onChange, onPresetsChange }: BrainViewProps) {
+  const updatePreset = (id: string, patch: Partial<Preset>) =>
+    onPresetsChange(presets.map((p) => (p.id === id ? { ...p, ...patch } : p)));
+
+  const addPreset = () =>
+    onPresetsChange([
+      ...presets,
+      { id: newPresetId(), name: 'New preset', prompt: '' },
+    ]);
+
+  const removePreset = (id: string) =>
+    onPresetsChange(presets.filter((p) => p.id !== id));
+
   return (
     <>
       <ViewHeader
@@ -72,6 +92,47 @@ export function BrainView({ brain, onChange }: BrainViewProps) {
               rows={16}
               className={`${textareaClass} font-mono text-[12px] leading-relaxed`}
             />
+          </Section>
+
+          {/* Presets */}
+          <Section
+            title="Presets"
+            description="Per-batch prompt modifiers. Pick one in the Generate modal to steer a batch — educational, sales, vibe, etc. — without rewriting the Brain."
+          >
+            <div className="flex flex-col gap-3">
+              {presets.length === 0 && (
+                <p className="text-[12px] text-ink-5 italic">No presets yet. Add one to steer specific batches.</p>
+              )}
+              {presets.map((preset) => (
+                <div key={preset.id} className="rounded-lg border border-line bg-surface p-3 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <input
+                      value={preset.name}
+                      onChange={(e) => updatePreset(preset.id, { name: e.target.value })}
+                      placeholder="Preset name"
+                      className={`${inputClass} flex-1 h-8`}
+                    />
+                    <button
+                      onClick={() => removePreset(preset.id)}
+                      className="w-8 h-8 shrink-0 rounded-md text-ink-5 hover:text-red-600 hover:bg-red-50 flex items-center justify-center transition-colors"
+                      title="Delete preset"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                  <textarea
+                    value={preset.prompt}
+                    onChange={(e) => updatePreset(preset.id, { prompt: e.target.value })}
+                    rows={5}
+                    placeholder="What this preset should emphasize or avoid. Injected into the prompt after the style memory."
+                    className={`${textareaClass} font-mono text-[12px] leading-relaxed`}
+                  />
+                </div>
+              ))}
+              <Button variant="secondary" icon={<Plus size={13} />} onClick={addPreset}>
+                Add preset
+              </Button>
+            </div>
           </Section>
         </div>
       </div>

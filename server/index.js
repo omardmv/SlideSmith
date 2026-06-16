@@ -1,6 +1,6 @@
-// Slidesmith local server. Holds the user's API keys, runs Claude generation,
-// proxies post-bridge (so keys never touch the browser and CORS is a non-issue),
-// and serves the built UI in production. In dev, Vite proxies /api here.
+// Slidesmith local server. Holds the user's API keys, runs ZAI generation,
+// saves rendered slideshows to disk under ~/.slidesmith/exports/, and serves
+// the built UI in production. In dev, Vite proxies /api here.
 import express from 'express'
 import { existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
@@ -18,16 +18,17 @@ import {
   addToQueue,
   removeFromQueue,
   CONFIG_DIR,
+  EXPORTS_DIR,
 } from './store.js'
-import { listAccounts, listPosts, listAnalytics, syncAnalytics, uploadMedia, createPost } from './postbridge.js'
 import { generateSlideshows } from './generate.js'
-import { listModels, validateKey } from './openrouter.js'
+import { listModels, validateKey } from './zai.js'
 import { listLibrary, listPacks, scrapePinterest, removeScraped, getScrapedFile } from './library.js'
+import { saveSlideshowToDisk } from './save.js'
 import { logger } from './log.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const schedLog = logger('schedule')
 const genLog = logger('generate')
+const saveLog = logger('save')
 const PORT = process.env.PORT || 8787
 // Bind loopback only by default. This server returns the user's API keys in
 // plaintext (GET /api/config feeds the Settings UI), so listening on all
@@ -58,7 +59,7 @@ app.get('/api/config', h(async (_req, res) => res.json(getConfig())))
 // Global settings only: keys + model. Project data goes through /api/projects.
 app.put('/api/config', h(async (req, res) => res.json(saveGlobal(req.body || {}))))
 
-// ── Projects (each = a Brain + default post-bridge accounts) ──────────────────
+// ── Projects (each = a Brain + background-pack selection) ──────────────────────
 app.post('/api/projects', h(async (req, res) => res.json(createProject(req.body?.name))))
 app.put('/api/projects/:id', h(async (req, res) => res.json(updateProject(req.params.id, req.body || {}))))
 app.delete('/api/projects/:id', h(async (req, res) => res.json(deleteProject(req.params.id))))
@@ -67,14 +68,10 @@ app.post('/api/projects/:id/activate', h(async (req, res) => res.json(setActiveP
 // Validate that the saved keys actually work, so Settings can show a green check.
 app.post('/api/config/test', h(async (_req, res) => {
   const { keys } = getConfig()
-  const result = { postbridge: false, openrouter: false, apify: false, errors: {} }
-  if (keys.postbridge) {
-    try { await listAccounts(keys.postbridge); result.postbridge = true }
-    catch (e) { result.errors.postbridge = e.message }
-  }
-  if (keys.openrouter) {
-    try { await validateKey(keys.openrouter); result.openrouter = true }
-    catch (e) { result.errors.openrouter = e.message }
+  const result = { zai: false, apify: false, errors: {} }
+  if (keys.zai) {
+    try { await validateKey(keys.zai); result.zai = true }
+    catch (e) { result.errors.zai = e.message }
   }
   if (keys.apify) {
     try {
@@ -86,10 +83,13 @@ app.post('/api/config/test', h(async (_req, res) => {
   res.json(result)
 }))
 
-// Public model catalog for the Settings dropdown.
-app.get('/api/models', h(async (_req, res) => res.json(await listModels())))
+// Model catalog for the Settings dropdown. Requires the saved ZAI key.
+app.get('/api/models', h(async (_req, res) => {
+  const { keys } = getConfig()
+  res.json(await listModels(keys.zai))
+}))
 
-// ── Queue (generated drafts for the active project, before post-bridge) ───────
+// ── Queue (generated drafts for the active project, before save-to-disk) ──────
 app.get('/api/queue', h(async (_req, res) => {
   const project = getActiveProject()
   res.json(getQueue(project.id))
@@ -99,7 +99,16 @@ app.post('/api/generate', h(async (req, res) => {
   const { keys, model } = getConfig()
   const project = getActiveProject()
   const count = Math.min(Math.max(Math.round(Number(req.body?.count) || 4), 1), 100)
-  const slideshows = await generateSlideshows({ apiKey: keys.openrouter, model, brain: project.brain, count })
+  // Optional preset: look it up by id in the project's preset list. If the id
+  // isn't found (or is null/empty), generate without a preset.
+  const presetId = req.body?.presetId ? String(req.body.presetId) : ''
+  const preset = presetId
+    ? (project.presets || []).find((p) => p.id === presetId) || null
+    : null
+  if (presetId && !preset) {
+    throw new Error(`Unknown preset: ${presetId}`)
+  }
+  const slideshows = await generateSlideshows({ apiKey: keys.zai, model, brain: project.brain, count, preset })
 
   // Auto-assign background images. A per-batch `packs` override (from the
   // Generate modal) wins; otherwise fall back to the project's saved packs.
@@ -142,6 +151,28 @@ app.put('/api/queue/:id', h(async (req, res) => {
   res.json(setQueue(pid, next))
 }))
 
+// Save a rendered slideshow to disk. `slides` are PNG data URLs from the browser.
+// Writes to ~/.slidesmith/exports/<projectSlug>/<NNN>-<hookSlug>/ and returns
+// the absolute path so the UI can show "Saved to …".
+app.post('/api/save/:id', h(async (req, res) => {
+  const project = getActiveProject()
+  const { slides, caption, hashtags } = req.body || {}
+  if (!Array.isArray(slides) || !slides.length) throw new Error('No slide images to save.')
+
+  saveLog.start(`Saving ${req.params.id} → ${project.name}`)
+  const path = saveSlideshowToDisk({
+    projectName: project.name,
+    // Look up the hook from the queued slideshow so the folder name reflects
+    // what was actually saved (falls back if the id has already been removed).
+    hook: (getQueue(project.id).find((s) => s.id === req.params.id) || {}).hook || '',
+    slides,
+    caption: caption || '',
+    hashtags: Array.isArray(hashtags) ? hashtags : [],
+  })
+  saveLog.ok(`Saved → ${path}`)
+  res.json({ path })
+}))
+
 // ── Image library (bundled aesthetic packs + Pinterest scrapes via Apify) ────────
 app.get('/api/library', h(async (_req, res) => res.json(listLibrary())))
 app.get('/api/library/packs', h(async (_req, res) => res.json(listPacks())))
@@ -162,73 +193,6 @@ app.get('/api/library/img/:id', h(async (req, res) => {
   res.sendFile(file, { dotfiles: 'allow' })
 }))
 
-// ── post-bridge ───────────────────────────────────────────────────────────────
-app.get('/api/accounts', h(async (_req, res) => {
-  const { keys } = getConfig()
-  res.json(await listAccounts(keys.postbridge))
-}))
-
-app.get('/api/posts', h(async (_req, res) => {
-  const { keys } = getConfig()
-  res.json(await listPosts(keys.postbridge))
-}))
-
-app.get('/api/results', h(async (_req, res) => {
-  const { keys } = getConfig()
-  res.json(await listAnalytics(keys.postbridge))
-}))
-
-// Pull fresh metrics from the platforms, then hand back the updated analytics.
-// post-bridge rate-limits sync (429) — swallow that so the refresh still returns
-// whatever's already there.
-app.post('/api/results/sync', h(async (_req, res) => {
-  const { keys } = getConfig()
-  try { await syncAnalytics(keys.postbridge) } catch (e) { console.warn('[results] sync skipped:', e.message) }
-  res.json(await listAnalytics(keys.postbridge))
-}))
-
-// Schedule a slideshow: upload each rendered slide image to post-bridge, then
-// create the post. `slides` are data URLs (PNG) rendered in the browser.
-app.post('/api/schedule', h(async (req, res) => {
-  const { keys } = getConfig()
-  const { id, caption, slides, socialAccounts, scheduledAt, mode } = req.body || {}
-  if (!socialAccounts?.length) throw new Error('Pick at least one social account.')
-  if (!slides?.length) throw new Error('No slide images to upload.')
-
-  const when = mode === 'schedule' ? (scheduledAt ? `scheduled for ${scheduledAt}` : 'scheduled') : 'draft'
-  schedLog.start(`Posting ${id || 'slideshow'} → ${when} · ${socialAccounts.length} account${socialAccounts.length === 1 ? '' : 's'}`)
-
-  // Upload all slides concurrently — post-bridge handles them independently, so
-  // there's no reason to wait for each. Results stay in slide order (the index
-  // into the array) so the carousel keeps its sequence.
-  let done = 0
-  const mediaIds = await Promise.all(
-    slides.map(async (slide, i) => {
-      const buffer = Buffer.from(String(slide).replace(/^data:image\/\w+;base64,/, ''), 'base64')
-      const mediaId = await uploadMedia(keys.postbridge, {
-        buffer,
-        mimeType: 'image/png',
-        name: `${id || 'slide'}-${i + 1}.png`,
-      })
-      schedLog.progress(++done, slides.length, 'slides uploaded')
-      return mediaId
-    })
-  )
-
-  schedLog.step(`creating post on post-bridge…`)
-  const post = await createPost(keys.postbridge, {
-    caption,
-    mediaIds,
-    socialAccounts,
-    scheduledAt: mode === 'schedule' ? scheduledAt : null,
-    isDraft: mode !== 'schedule', // "save as draft" leaves it unprocessed in post-bridge
-  })
-
-  if (id) removeFromQueue(getActiveProject().id, id)
-  schedLog.ok(`Done — ${mode === 'schedule' ? 'scheduled' : 'saved as draft'}`)
-  res.json(post)
-}))
-
 // ── Static (production / `npm start`) ─────────────────────────────────────────
 const dist = join(__dirname, '..', 'dist')
 if (existsSync(dist)) {
@@ -243,5 +207,6 @@ if (existsSync(dist)) {
 
 app.listen(PORT, HOST, () => {
   console.log(`\n  Slidesmith server → http://localhost:${PORT} (bound to ${HOST})`)
-  console.log(`  Config + queue stored in ${CONFIG_DIR}\n`)
+  console.log(`  Config + queue stored in ${CONFIG_DIR}`)
+  console.log(`  Saved slideshows written under ${EXPORTS_DIR}\n`)
 })

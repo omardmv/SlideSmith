@@ -1,46 +1,33 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState } from 'react';
 import { Sidebar } from './components/Sidebar';
-import { ScheduleModal } from './components/ScheduleModal';
-import { BulkScheduleModal } from './components/BulkScheduleModal';
 import { GenerateModal } from './components/GenerateModal';
 import { SlideshowEditorModal } from './components/SlideshowEditorModal';
+import { BulkSaveModal } from './components/BulkSaveModal';
 import { QueueView } from './views/QueueView';
 import { LibraryView } from './views/LibraryView';
-import { ScheduleView } from './views/ScheduleView';
-import { ResultsView } from './views/ResultsView';
 import { BrainView } from './views/BrainView';
 import { SettingsView } from './views/SettingsView';
 import { renderSlideshow } from './lib/render';
 import * as api from './lib/api';
-import type { AppConfig, Project, Slideshow, Slide, SocialAccount, BrainState, ViewKey } from './types';
+import type { AppConfig, Project, Slideshow, Slide, BrainState, Preset, ViewKey } from './types';
 
 export default function App() {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [activeView, setActiveView] = useState<ViewKey>('queue');
   const [queue, setQueue] = useState<Slideshow[]>([]);
-  const [accounts, setAccounts] = useState<SocialAccount[]>([]);
   const [generating, setGenerating] = useState(false);
-  const [scheduling, setScheduling] = useState<Slideshow | null>(null);
   const [editing, setEditing] = useState<Slideshow | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkSaveOpen, setBulkSaveOpen] = useState(false);
   const [generateOpen, setGenerateOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [savedPath, setSavedPath] = useState<string | null>(null);
 
-  const hasOpenrouter = !!config?.keys.openrouter;
-  const hasPostbridge = !!config?.keys.postbridge;
+  const hasZai = !!config?.keys.zai;
   const hasApify = !!config?.keys.apify;
   const activeProject: Project | undefined = config?.projects.find(
     (p) => p.id === config.activeProjectId
   ) ?? config?.projects[0];
-
-  const loadAccounts = useCallback(async () => {
-    try {
-      setAccounts(await api.getAccounts());
-    } catch {
-      setAccounts([]);
-    }
-  }, []);
 
   useEffect(() => {
     (async () => {
@@ -48,19 +35,18 @@ export default function App() {
         const cfg = await api.getConfig();
         setConfig(cfg);
         setQueue(await api.getQueue());
-        if (!cfg.keys.openrouter && !cfg.keys.postbridge) setActiveView('settings');
-        if (cfg.keys.postbridge) loadAccounts();
+        if (!cfg.keys.zai) setActiveView('settings');
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Could not reach the Slidesmith server.');
       }
     })();
-  }, [loadAccounts]);
+  }, []);
 
-  const generate = async (count: number, packs: string[]) => {
+  const generate = async (count: number, packs: string[], presetId: string) => {
     setError(null);
     setGenerating(true);
     try {
-      await api.generate(count, packs);
+      await api.generate(count, packs, presetId || undefined);
       setQueue(await api.getQueue());
       setGenerateOpen(false);
     } catch (e) {
@@ -82,11 +68,9 @@ export default function App() {
   const toggleSelect = (id: string) =>
     setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
 
-  const bulkDone = async () => {
-    setBulkOpen(false);
+  const bulkDone = () => {
+    setBulkSaveOpen(false);
     setSelectedIds([]);
-    setQueue(await api.getQueue());
-    setActiveView('schedule');
   };
 
   const saveEdits = async (patch: { slides: Slide[]; caption: string; hashtags: string[] }) => {
@@ -95,45 +79,36 @@ export default function App() {
     setEditing(null);
   };
 
-  const confirmSchedule = async (opts: {
-    socialAccounts: number[];
-    mode: 'draft' | 'schedule';
-    scheduledAt: string | null;
-  }) => {
-    if (!scheduling) return;
-    const scheduledId = scheduling.id;
-    const slides = await renderSlideshow(scheduling);
-    await api.schedule({
-      id: scheduledId,
-      caption: `${scheduling.caption}${scheduling.hashtags.length ? ' ' + scheduling.hashtags.map((t) => `#${t}`).join(' ') : ''}`,
-      slides,
-      socialAccounts: opts.socialAccounts,
-      scheduledAt: opts.scheduledAt,
-      mode: opts.mode,
-    });
-    // Drop the now-scheduled slideshow from the queue immediately (optimistic),
-    // then reconcile with the server. The modal stays open showing its success
-    // state with a link to post-bridge instead of us jumping to the Schedule tab.
-    setQueue((q) => q.filter((s) => s.id !== scheduledId));
-    setQueue(await api.getQueue());
+  // Render the slideshow client-side, POST the PNGs to the server, and show
+  // the resulting disk path as a transient banner.
+  const saveSlideshow = async (id: string) => {
+    setError(null);
+    setSavedPath(null);
+    const show = queue.find((s) => s.id === id);
+    if (!show) return;
+    try {
+      const slides = await renderSlideshow(show);
+      const { path } = await api.saveSlideshow(id, { slides, caption: show.caption, hashtags: show.hashtags });
+      setSavedPath(path);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
   };
 
-  // Global settings (keys/model) + per-project edits (name/defaults), in one call.
+  // Global settings (keys/model) + per-project edits (name/imagePacks), in one call.
   const saveSettings = async (patch: {
     keys?: AppConfig['keys'];
     model?: string;
     pinterestActor?: string;
     name?: string;
-    defaults?: Project['defaults'];
     imagePacks?: string[];
   }) => {
     if (patch.keys || patch.model !== undefined || patch.pinterestActor !== undefined) {
       await api.saveConfig({ keys: patch.keys, model: patch.model, pinterestActor: patch.pinterestActor });
     }
-    if (activeProject && (patch.name !== undefined || patch.defaults || patch.imagePacks)) {
+    if (activeProject && (patch.name !== undefined || patch.imagePacks)) {
       await api.updateProject(activeProject.id, {
         name: patch.name,
-        defaults: patch.defaults,
         imagePacks: patch.imagePacks,
       });
     }
@@ -149,6 +124,16 @@ export default function App() {
         : c
     );
     await api.updateProject(activeProject.id, { brain });
+  };
+
+  const savePresets = async (presets: Preset[]) => {
+    if (!activeProject) return;
+    setConfig((c) =>
+      c
+        ? { ...c, projects: c.projects.map((p) => (p.id === activeProject.id ? { ...p, presets } : p)) }
+        : c
+    );
+    await api.updateProject(activeProject.id, { presets });
   };
 
   const switchProject = async (id: string) => {
@@ -181,7 +166,6 @@ export default function App() {
         activeView={activeView}
         onSelectView={setActiveView}
         queueCount={queue.length}
-        scheduledCount={0}
         projects={config.projects}
         activeProjectId={config.activeProjectId}
         onSwitchProject={switchProject}
@@ -193,49 +177,48 @@ export default function App() {
             {error}
           </div>
         )}
+        {savedPath && activeView === 'queue' && (
+          <div className="px-8 py-2 bg-emerald-50 border-b border-emerald-200 text-[12px] text-emerald-700 flex items-center justify-between">
+            <span>Saved → <span className="font-mono">{savedPath}</span></span>
+            <button onClick={() => setSavedPath(null)} className="text-emerald-700/70 hover:text-emerald-700">dismiss</button>
+          </div>
+        )}
 
         {activeView === 'queue' && (
           <QueueView
             slideshows={queue}
             generating={generating}
-            canGenerate={hasOpenrouter}
+            canGenerate={hasZai}
             onGenerate={() => setGenerateOpen(true)}
             selectedIds={selectedIds}
-            onApprove={(id) => setScheduling(queue.find((s) => s.id === id) || null)}
+            onSave={saveSlideshow}
             onReject={reject}
             onEdit={(id) => setEditing(queue.find((s) => s.id === id) || null)}
             onToggleSelect={toggleSelect}
             onSelectAll={() => setSelectedIds(queue.map((s) => s.id))}
             onClearSelection={() => setSelectedIds([])}
-            onBulkSchedule={() => setBulkOpen(true)}
+            onBulkSave={() => setBulkSaveOpen(true)}
           />
         )}
         {activeView === 'library' && <LibraryView hasApify={hasApify} />}
-        {activeView === 'schedule' && <ScheduleView configured={hasPostbridge} />}
-        {activeView === 'results' && <ResultsView configured={hasPostbridge} />}
-        {activeView === 'brain' && <BrainView brain={activeProject.brain} onChange={saveBrain} />}
+        {activeView === 'brain' && (
+          <BrainView
+            brain={activeProject.brain}
+            presets={activeProject.presets}
+            onChange={saveBrain}
+            onPresetsChange={savePresets}
+          />
+        )}
         {activeView === 'settings' && (
           <SettingsView
             config={config}
             project={activeProject}
-            accounts={accounts}
             canDelete={config.projects.length > 1}
             onSave={saveSettings}
             onDeleteProject={() => removeProject(activeProject.id)}
-            onReloadAccounts={loadAccounts}
           />
         )}
       </main>
-
-      {scheduling && (
-        <ScheduleModal
-          slideshow={scheduling}
-          accounts={accounts}
-          defaults={activeProject.defaults}
-          onClose={() => setScheduling(null)}
-          onConfirm={confirmSchedule}
-        />
-      )}
 
       {editing && (
         <SlideshowEditorModal
@@ -245,18 +228,10 @@ export default function App() {
         />
       )}
 
-      {bulkOpen && selectedIds.length > 0 && (
-        <BulkScheduleModal
+      {bulkSaveOpen && selectedIds.length > 0 && (
+        <BulkSaveModal
           slideshows={queue.filter((s) => selectedIds.includes(s.id))}
-          accounts={accounts}
-          defaults={activeProject.defaults}
-          // Closing via the X/backdrop must still drop any now-scheduled items
-          // from the queue — otherwise it looks stale until a browser reload.
-          onClose={async () => {
-            setBulkOpen(false);
-            setSelectedIds([]);
-            setQueue(await api.getQueue());
-          }}
+          onClose={() => setBulkSaveOpen(false)}
           onDone={bulkDone}
         />
       )}
@@ -264,6 +239,8 @@ export default function App() {
       {generateOpen && (
         <GenerateModal
           defaultPacks={activeProject.imagePacks}
+          presets={activeProject.presets}
+          defaultPresetId=""
           generating={generating}
           onClose={() => setGenerateOpen(false)}
           onGenerate={generate}
@@ -272,4 +249,3 @@ export default function App() {
     </div>
   );
 }
-
