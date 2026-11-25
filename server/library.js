@@ -2,9 +2,10 @@
 // any images the user scrapes from Pinterest with their own Apify key. Scraped
 // images are downloaded to ~/.slidesmith/library/ so the browser can composite
 // them onto the export canvas same-origin (remote URLs would taint it).
-import { homedir } from 'node:os'
-import { join, dirname, extname } from 'node:path'
+import { homedir, tmpdir } from 'node:os'
+import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { execFileSync } from 'node:child_process'
 import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, rmSync } from 'node:fs'
 import { logger } from './log.js'
 
@@ -62,11 +63,33 @@ function reconcileOrphans() {
   return index
 }
 
+// Images scraped before format sniffing existed may be HEIC/AVIF, which render
+// blank on the canvas. Convert them to JPEG in place (keeping their id, so
+// slideshows that already point at them keep working); drop any we can't convert.
+function repairUnsafeFormats(index) {
+  let changed = false
+  const out = []
+  for (const rec of index) {
+    const p = join(MEDIA_DIR, rec.file)
+    if (!/\.(heic|heif|avif)$/i.test(rec.file) || !existsSync(p)) { out.push(rec); continue }
+    const buf = readFileSync(p)
+    const jpeg = toJpeg(buf, sniffImage(buf) || 'heic')
+    changed = true
+    if (!jpeg) { log.warn(`dropped ${rec.file} (format the browser can't draw)`); continue }
+    const file = rec.file.replace(/\.[^.]+$/, '.jpg')
+    writeFileSync(join(MEDIA_DIR, file), jpeg)
+    rmSync(p)
+    out.push({ ...rec, file })
+  }
+  if (changed) writeJson(INDEX_PATH, out)
+  return out
+}
+
 export function listLibrary() {
   // Only list scraped images whose files actually exist on disk — avoids broken
   // thumbnails / 404s if the index and files ever drift apart. Reconcile first
   // so any orphaned files on disk are picked back up.
-  const scraped = reconcileOrphans()
+  const scraped = repairUnsafeFormats(reconcileOrphans())
     .filter((s) => existsSync(join(MEDIA_DIR, s.file)))
     .map((s) => ({
       id: s.id,
@@ -159,6 +182,44 @@ const IMG_FETCH_HEADERS = {
 
 const APIFY = 'https://api.apify.com/v2/acts'
 
+// What the bytes actually are. Pinterest URLs don't reliably say (a ".jpg" pin can
+// be served as HEIC), so we sniff the header instead of trusting the extension.
+function sniffImage(buf) {
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'jpg'
+  if (buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'png'
+  if (buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') return 'webp'
+  if (buf.toString('ascii', 0, 4) === 'GIF8') return 'gif'
+  if (buf.toString('ascii', 4, 8) === 'ftyp') {
+    const brand = buf.toString('ascii', 8, 12)
+    if (/^(avif|avis)$/.test(brand)) return 'avif'
+    if (/^(heic|heix|hevc|hevx|heim|heis|mif1|msf1)$/.test(brand)) return 'heic'
+  }
+  return null
+}
+
+// Formats every browser can draw onto the export canvas. HEIC is Safari-only and
+// AVIF support is uneven, so both get converted to JPEG instead.
+const CANVAS_SAFE = new Set(['jpg', 'png', 'webp', 'gif'])
+
+// Convert a downloaded image to JPEG. Uses macOS's built-in `sips` (no extra
+// dependency); returns null where that isn't available so the caller can skip
+// the image rather than save a file the canvas can't draw.
+function toJpeg(buf, kind) {
+  if (process.platform !== 'darwin') return null
+  const stamp = `${Date.now()}-${Math.round(Math.random() * 1e6)}`
+  const src = join(tmpdir(), `slidesmith-${stamp}.${kind}`)
+  const dst = join(tmpdir(), `slidesmith-${stamp}.jpg`)
+  try {
+    writeFileSync(src, buf)
+    execFileSync('sips', ['-s', 'format', 'jpeg', '-s', 'formatOptions', '90', src, '--out', dst], { stdio: 'ignore' })
+    return readFileSync(dst)
+  } catch {
+    return null
+  } finally {
+    for (const p of [src, dst]) if (existsSync(p)) rmSync(p)
+  }
+}
+
 export async function scrapePinterest({ apiKey, actor, searches, count }) {
   if (!apiKey) throw new Error('Missing Apify API key. Add it in Settings.')
   const queries = (searches || []).map((s) => s.trim()).filter(Boolean)
@@ -202,11 +263,19 @@ export async function scrapePinterest({ apiKey, actor, searches, count }) {
     try {
       const r = await fetch(url, { headers: IMG_FETCH_HEADERS })
       if (!r.ok) { skipped++; continue }
-      const buf = Buffer.from(await r.arrayBuffer())
+      let buf = Buffer.from(await r.arrayBuffer())
       if (buf.length < 1024) { skipped++; continue } // skip tiny/placeholder
-      const ext = (extname(new URL(url).pathname) || '.jpg').slice(0, 5)
+      let kind = sniffImage(buf)
+      if (kind && !CANVAS_SAFE.has(kind)) {
+        // e.g. HEIC: the browser can't draw it, so the slide would render blank.
+        const jpeg = toJpeg(buf, kind)
+        if (!jpeg) { log.warn(`skipped a ${kind.toUpperCase()} image (can't convert on this system)`); skipped++; continue }
+        buf = jpeg
+        kind = 'jpg'
+      }
+      if (!kind) { skipped++; continue } // not an image we recognise
       const id = `scraped:${Date.now()}-${Math.round(Math.random() * 1e6)}`
-      const file = `${id.replace('scraped:', '')}${ext}`
+      const file = `${id.replace('scraped:', '')}.${kind}`
       writeFileSync(join(MEDIA_DIR, file), buf)
       index.unshift({ id, file, pack, addedAt: new Date().toISOString() })
       added++
